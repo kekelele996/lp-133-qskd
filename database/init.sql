@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS orders (
   need_id INT NOT NULL COMMENT '需求ID',
   user_id INT NOT NULL COMMENT '需求发布者ID',
   volunteer_id INT NOT NULL COMMENT '志愿者ID',
-  status ENUM('in_progress', 'completed', 'cancelled') DEFAULT 'in_progress' COMMENT '状态',
+  status ENUM('in_progress', 'pending_confirm', 'completed', 'cancelled') DEFAULT 'in_progress' COMMENT '状态: in_progress-进行中, pending_confirm-中断待确认, completed-已完成, cancelled-已取消',
   service_hours DECIMAL(8, 2) DEFAULT 0 COMMENT '服务时长(小时)',
   start_time DATETIME COMMENT '开始时间',
   end_time DATETIME COMMENT '结束时间',
@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS orders (
   INDEX idx_user_id (user_id),
   INDEX idx_volunteer_id (volunteer_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
+
+-- 订单异常记录表
+CREATE TABLE IF NOT EXISTS order_exceptions (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  order_id INT NOT NULL COMMENT '订单ID',
+  reporter_id INT NOT NULL COMMENT '上报人ID(居民或志愿者)',
+  reason VARCHAR(500) NOT NULL COMMENT '中断原因',
+  expected_resume_time DATETIME COMMENT '期望改到的时间',
+  status ENUM('pending', 'resolved') DEFAULT 'pending' COMMENT '处理状态: pending-待确认, resolved-已处理',
+  resolution ENUM('reschedule', 'end') COMMENT '处理结果: reschedule-确认改期, end-确认结束',
+  resolved_by INT COMMENT '处理人ID',
+  resolved_at DATETIME COMMENT '处理时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES orders(id),
+  FOREIGN KEY (reporter_id) REFERENCES users(id),
+  FOREIGN KEY (resolved_by) REFERENCES users(id),
+  INDEX idx_order_id (order_id),
+  INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单异常记录表';
 
 -- 评价表
 CREATE TABLE IF NOT EXISTS reviews (
@@ -134,6 +153,7 @@ TRUNCATE TABLE exchanges;
 TRUNCATE TABLE gifts;
 TRUNCATE TABLE messages;
 TRUNCATE TABLE reviews;
+TRUNCATE TABLE order_exceptions;
 TRUNCATE TABLE orders;
 TRUNCATE TABLE needs;
 TRUNCATE TABLE users;
@@ -143,6 +163,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 ALTER TABLE users AUTO_INCREMENT = 1;
 ALTER TABLE needs AUTO_INCREMENT = 1;
 ALTER TABLE orders AUTO_INCREMENT = 1;
+ALTER TABLE order_exceptions AUTO_INCREMENT = 1;
 ALTER TABLE reviews AUTO_INCREMENT = 1;
 ALTER TABLE messages AUTO_INCREMENT = 1;
 ALTER TABLE gifts AUTO_INCREMENT = 1;
