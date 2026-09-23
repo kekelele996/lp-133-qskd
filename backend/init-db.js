@@ -74,7 +74,7 @@ const initData = async () => {
         need_id INT NOT NULL,
         user_id INT NOT NULL,
         volunteer_id INT NOT NULL,
-        status ENUM('in_progress', 'completed', 'cancelled') DEFAULT 'in_progress',
+        status ENUM('in_progress', 'exception_pending', 'completed', 'cancelled') DEFAULT 'in_progress',
         service_hours DECIMAL(8, 2) DEFAULT 0,
         start_time DATETIME,
         end_time DATETIME,
@@ -89,6 +89,28 @@ const initData = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     console.log('✅ 订单表创建完成');
+
+    // 创建订单异常表
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS order_exceptions (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        order_id INT NOT NULL,
+        reporter_id INT NOT NULL,
+        reason VARCHAR(500) NOT NULL,
+        expected_time DATETIME,
+        status ENUM('pending', 'rescheduled', 'ended') DEFAULT 'pending',
+        handler_id INT,
+        handled_at DATETIME,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (order_id) REFERENCES orders(id),
+        FOREIGN KEY (reporter_id) REFERENCES users(id),
+        FOREIGN KEY (handler_id) REFERENCES users(id),
+        INDEX idx_order_id (order_id),
+        INDEX idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    console.log('✅ 订单异常表创建完成');
 
     // 创建评价表
     await pool.query(`
@@ -162,6 +184,7 @@ const initData = async () => {
     await pool.query('TRUNCATE TABLE gifts');
     await pool.query('TRUNCATE TABLE messages');
     await pool.query('TRUNCATE TABLE reviews');
+    await pool.query('TRUNCATE TABLE order_exceptions');
     await pool.query('TRUNCATE TABLE orders');
     await pool.query('TRUNCATE TABLE needs');
     await pool.query('TRUNCATE TABLE users');

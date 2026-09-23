@@ -304,6 +304,198 @@ else
 fi
 
 echo ""
+
+# 18. 异常流程 - 居民发布新需求并接单
+test_step "18. 异常流程：居民发布新需求，志愿者接单"
+PUBLISH_RES2=$(curl -s -X POST "$BASE_URL/needs" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RESIDENT_TOKEN" \
+  -d '{
+    "title": "上门维修水龙头",
+    "description": "厨房水龙头漏水，需要帮忙维修",
+    "type": "repair",
+    "address": "北京市朝阳区光华路2号",
+    "lat": 39.9122,
+    "lng": 116.4574,
+    "expected_time": "2026-05-21 09:00:00"
+  }')
+
+if echo "$PUBLISH_RES2" | grep -q "发布成功" > /dev/null 2>&1; then
+  NEED_ID2=$(echo "$PUBLISH_RES2" | python3 -c "import sys,json; print(json.load(sys.stdin)['needId'])")
+  test_pass "需求发布成功，需求ID: $NEED_ID2"
+else
+  echo "响应: $PUBLISH_RES2"
+  test_fail "发布需求失败"
+fi
+
+ACCEPT_RES2=$(curl -s -X POST "$BASE_URL/needs/$NEED_ID2/accept" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN")
+
+if echo "$ACCEPT_RES2" | grep -q "接单成功" > /dev/null 2>&1; then
+  ORDERS_RES2=$(curl -s "$BASE_URL/orders?status=in_progress" \
+    -H "Authorization: Bearer $VOLUNTEER_TOKEN")
+  ORDER_ID2=$(echo "$ORDERS_RES2" | python3 -c "import sys,json; orders=json.load(sys.stdin)['orders']; print([o['id'] for o in orders if o['need_id']==$NEED_ID2][0])")
+  test_pass "接单成功，订单ID: $ORDER_ID2"
+else
+  echo "响应: $ACCEPT_RES2"
+  test_fail "接单失败"
+fi
+
+echo ""
+
+# 19. 志愿者上报中断
+test_step "19. 志愿者上报中断（填写原因和希望改到的时间）"
+EX_REPORT_RES=$(curl -s -X POST "$BASE_URL/orders/$ORDER_ID2/exception" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" \
+  -d '{"reason": "老人临时去医院，当天无法完成维修", "expected_time": "2026-05-25 10:00:00"}')
+
+if echo "$EX_REPORT_RES" | grep -q "异常上报成功" > /dev/null 2>&1; then
+  ORDER_STATUS=$(curl -s "$BASE_URL/orders?status=exception_pending" \
+    -H "Authorization: Bearer $VOLUNTEER_TOKEN" | python3 -c "import sys,json; orders=json.load(sys.stdin)['orders']; m=[o for o in orders if o['id']==$ORDER_ID2]; print(m[0]['status'] if m else 'none')")
+  if [ "$ORDER_STATUS" = "exception_pending" ]; then
+    test_pass "异常上报成功，订单已停在待确认状态"
+  else
+    test_fail "订单未进入待确认状态"
+  fi
+else
+  echo "响应: $EX_REPORT_RES"
+  test_fail "异常上报失败"
+fi
+
+echo ""
+
+# 20. 重复上报 - 保留原记录并提示等待处理
+test_step "20. 居民重复上报（应提示已有待处理异常）"
+EX_REPORT_RES2=$(curl -s -X POST "$BASE_URL/orders/$ORDER_ID2/exception" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RESIDENT_TOKEN" \
+  -d '{"reason": "再次上报", "expected_time": "2026-05-26 10:00:00"}')
+
+if echo "$EX_REPORT_RES2" | grep -q "已有待处理的异常上报" > /dev/null 2>&1; then
+  test_pass "重复上报被拦截，提示等待对方处理"
+else
+  echo "响应: $EX_REPORT_RES2"
+  test_fail "重复上报未被拦截"
+fi
+
+echo ""
+
+# 21. 上报人尝试自行确认 - 应被拒绝
+test_step "21. 上报人（志愿者）尝试自行确认（应被拒绝）"
+EX_SELF_CONFIRM=$(curl -s -X PUT "$BASE_URL/orders/$ORDER_ID2/exception/confirm" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" \
+  -d '{"action": "reschedule"}')
+
+if echo "$EX_SELF_CONFIRM" | grep -q "异常需由对方确认处理" > /dev/null 2>&1; then
+  test_pass "上报人自行确认被拒绝"
+else
+  echo "响应: $EX_SELF_CONFIRM"
+  test_fail "上报人自行确认未被拒绝"
+fi
+
+echo ""
+
+# 22. 居民确认改期 - 沿用原志愿者并展示新时间
+test_step "22. 居民确认改期（沿用原志愿者，需求时间更新）"
+EX_RESCHEDULE_RES=$(curl -s -X PUT "$BASE_URL/orders/$ORDER_ID2/exception/confirm" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RESIDENT_TOKEN" \
+  -d '{"action": "reschedule"}')
+
+if echo "$EX_RESCHEDULE_RES" | grep -q "已确认改期" > /dev/null 2>&1; then
+  NEED_DETAIL=$(curl -s "$BASE_URL/needs/$NEED_ID2")
+  NEW_TIME=$(echo "$NEED_DETAIL" | python3 -c "import sys,json; print(json.load(sys.stdin)['need']['expected_time'])")
+  NEED_STATUS=$(echo "$NEED_DETAIL" | python3 -c "import sys,json; print(json.load(sys.stdin)['need']['status'])")
+  NEED_VOLUNTEER=$(echo "$NEED_DETAIL" | python3 -c "import sys,json; print(json.load(sys.stdin)['need']['volunteer_id'])")
+  ORDER_STATUS2=$(curl -s "$BASE_URL/orders?status=in_progress" \
+    -H "Authorization: Bearer $VOLUNTEER_TOKEN" | python3 -c "import sys,json; orders=json.load(sys.stdin)['orders']; m=[o for o in orders if o['id']==$ORDER_ID2]; print(m[0]['status'] if m else 'none')")
+  if echo "$NEW_TIME" | grep -q "2026-05-25" > /dev/null 2>&1 && [ "$NEED_STATUS" = "accepted" ] && [ "$NEED_VOLUNTEER" = "$VOLUNTEER_ID" ] && [ "$ORDER_STATUS2" = "in_progress" ]; then
+    test_pass "改期成功，新时间: $NEW_TIME，订单恢复进行中，志愿者不变"
+  else
+    echo "时间: $NEW_TIME, 需求状态: $NEED_STATUS, 志愿者: $NEED_VOLUNTEER, 订单状态: $ORDER_STATUS2"
+    test_fail "改期后数据不正确"
+  fi
+else
+  echo "响应: $EX_RESCHEDULE_RES"
+  test_fail "确认改期失败"
+fi
+
+echo ""
+
+# 23. 居民上报中断，志愿者确认结束 - 需求重新等待认领且不结算积分
+test_step "23. 居民上报中断，志愿者确认结束（不结算积分）"
+POINTS_BEFORE=$(curl -s "$BASE_URL/user/profile" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['user']['points'])")
+
+EX_REPORT_RES3=$(curl -s -X POST "$BASE_URL/orders/$ORDER_ID2/exception" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RESIDENT_TOKEN" \
+  -d '{"reason": "配件买不到，当天修不了", "expected_time": "2026-05-28 14:00:00"}')
+
+if echo "$EX_REPORT_RES3" | grep -q "异常上报成功" > /dev/null 2>&1; then
+  test_pass "居民上报中断成功"
+else
+  echo "响应: $EX_REPORT_RES3"
+  test_fail "居民上报中断失败"
+fi
+
+EX_END_RES=$(curl -s -X PUT "$BASE_URL/orders/$ORDER_ID2/exception/confirm" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" \
+  -d '{"action": "end"}')
+
+if echo "$EX_END_RES" | grep -q "已确认结束" > /dev/null 2>&1; then
+  NEED_DETAIL2=$(curl -s "$BASE_URL/needs/$NEED_ID2")
+  NEED_STATUS2=$(echo "$NEED_DETAIL2" | python3 -c "import sys,json; print(json.load(sys.stdin)['need']['status'])")
+  NEED_VOLUNTEER2=$(echo "$NEED_DETAIL2" | python3 -c "import sys,json; print(json.load(sys.stdin)['need']['volunteer_id'])")
+  POINTS_AFTER=$(curl -s "$BASE_URL/user/profile" \
+    -H "Authorization: Bearer $VOLUNTEER_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['user']['points'])")
+  if [ "$NEED_STATUS2" = "pending" ] && [ "$NEED_VOLUNTEER2" = "None" ] && [ "$POINTS_AFTER" = "$POINTS_BEFORE" ]; then
+    test_pass "确认结束成功，需求重新等待认领，积分未结算 ($POINTS_AFTER)"
+  else
+    echo "需求状态: $NEED_STATUS2, 志愿者: $NEED_VOLUNTEER2, 积分: $POINTS_BEFORE -> $POINTS_AFTER"
+    test_fail "确认结束后数据不正确"
+  fi
+else
+  echo "响应: $EX_END_RES"
+  test_fail "确认结束失败"
+fi
+
+echo ""
+
+# 24. 待确认订单不可完成
+test_step "24. 待确认订单不可直接完成"
+PUBLISH_RES3=$(curl -s -X POST "$BASE_URL/needs" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RESIDENT_TOKEN" \
+  -d '{"title": "陪同散步", "type": "accompany", "address": "北京市朝阳区光华路2号", "expected_time": "2026-05-22 09:00:00"}')
+NEED_ID3=$(echo "$PUBLISH_RES3" | python3 -c "import sys,json; print(json.load(sys.stdin)['needId'])")
+curl -s -X POST "$BASE_URL/needs/$NEED_ID3/accept" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" > /dev/null
+ORDER_ID3=$(curl -s "$BASE_URL/orders?status=in_progress" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" | python3 -c "import sys,json; orders=json.load(sys.stdin)['orders']; print([o['id'] for o in orders if o['need_id']==$NEED_ID3][0])")
+curl -s -X POST "$BASE_URL/orders/$ORDER_ID3/exception" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" \
+  -d '{"reason": "老人体温异常去了医院", "expected_time": "2026-05-29 09:00:00"}' > /dev/null
+
+COMPLETE_BLOCKED=$(curl -s -X PUT "$BASE_URL/orders/$ORDER_ID3/complete" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $VOLUNTEER_TOKEN" \
+  -d '{"service_hours": 1}')
+
+if echo "$COMPLETE_BLOCKED" | grep -q "订单当前状态不可完成" > /dev/null 2>&1; then
+  test_pass "待确认订单完成操作被拦截"
+else
+  echo "响应: $COMPLETE_BLOCKED"
+  test_fail "待确认订单仍可完成"
+fi
+
+echo ""
 echo "======================================"
 echo -e "${GREEN}🎉 所有测试通过！${NC}"
 echo "======================================"
@@ -322,6 +514,12 @@ echo "   ✅ 积分兑换礼品（保温杯100积分）"
 echo "   ✅ 兑换记录查询"
 echo "   ✅ 消息发送/接收"
 echo "   ✅ 积分排名"
+echo "   ✅ 异常上报（原因 + 希望改到的时间）"
+echo "   ✅ 重复上报拦截（保留原记录，提示等待处理）"
+echo "   ✅ 仅对方可确认处理"
+echo "   ✅ 确认改期（沿用原志愿者，展示新时间）"
+echo "   ✅ 确认结束（需求重新等待认领，不结算积分）"
+echo "   ✅ 待确认订单不可完成"
 echo ""
 echo "🎮 现在可以打开浏览器访问 http://localhost:8233 体验完整功能"
 echo ""
